@@ -1,0 +1,8 @@
+{
+  "name": "se-asset-grabber",
+  "version": "1.0.0",
+  "description": "StreamElements alert asset downloader",
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}
