@@ -48,15 +48,16 @@ exports.handler = async (event) => {
     const channel = await channelRes.json();
     const channelId = channel._id;
 
-    // ── Step 2: Get list of overlays ───────────────────────────────────────
+    // ── Step 2: Get list of overlays (no channel param — token scopes it) ──
     const overlaysRes = await fetch(
-      `https://api.streamelements.com/kappa/v2/overlays?channel=${channelId}`,
+      'https://api.streamelements.com/kappa/v2/overlays',
       { headers: seHeaders }
     );
 
     if (!overlaysRes.ok) {
+      const detail = await overlaysRes.text().catch(() => '');
       return respond(500, {
-        error: "Couldn't fetch your overlays. Try again in a moment.",
+        error: `Couldn't fetch overlays (${overlaysRes.status}). ${detail}`.trim(),
       });
     }
 
