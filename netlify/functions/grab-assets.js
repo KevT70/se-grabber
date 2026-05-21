@@ -4,6 +4,14 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
+// Known StreamElements asset domains — broadened to catch all variants
+const SE_DOMAINS = [
+  'cdn.streamelements.com',
+  'static.streamelements.com',
+  'uploads.streamelements.com',
+  'streamelements.com',
+];
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: CORS_HEADERS, body: '' };
@@ -39,23 +47,16 @@ exports.handler = async (event) => {
         { headers: seHeaders }
       );
     } catch (err) {
-      console.error('[se-ripper] Step 1 fetch threw:', err.message);
       return respond(500, { error: `Network error reaching StreamElements: ${err.message}` });
     }
 
-    console.log('[se-ripper] Step 1 status:', channelRes.status);
-
     if (!channelRes.ok) {
-      const body = await channelRes.text().catch(() => '');
-      console.error('[se-ripper] Step 1 failed:', channelRes.status, body);
       return respond(401, {
         error: 'Token not recognised — double-check it was copied in full and try again.',
       });
     }
 
     const channel = await channelRes.json();
-    console.log('[se-ripper] Step 1 channel keys:', Object.keys(channel));
-
     const channelId = channel._id;
     console.log('[se-ripper] Channel ID:', channelId);
 
@@ -75,24 +76,17 @@ exports.handler = async (event) => {
         { headers: seHeaders }
       );
     } catch (err) {
-      console.error('[se-ripper] Step 2 fetch threw:', err.message);
       return respond(500, { error: `Network error fetching overlays: ${err.message}` });
     }
 
-    console.log('[se-ripper] Step 2 status:', overlaysRes.status);
-
     if (!overlaysRes.ok) {
       const detail = await overlaysRes.text().catch(() => '');
-      console.error('[se-ripper] Step 2 failed:', overlaysRes.status, detail);
       return respond(500, {
         error: `Couldn't fetch overlays (${overlaysRes.status}). ${detail}`.trim(),
       });
     }
 
     const overlaysRaw = await overlaysRes.json();
-    console.log('[se-ripper] Step 2 response type:', typeof overlaysRaw, Array.isArray(overlaysRaw) ? `array[${overlaysRaw.length}]` : Object.keys(overlaysRaw));
-
-    // SE might return { docs: [...] } or a plain array — handle both
     const overlaysList = Array.isArray(overlaysRaw)
       ? overlaysRaw
       : overlaysRaw.docs || overlaysRaw.data || overlaysRaw.overlays || [];
@@ -100,26 +94,17 @@ exports.handler = async (event) => {
     console.log('[se-ripper] Overlays found:', overlaysList.length);
 
     if (overlaysList.length === 0) {
-      return respond(200, {
-        assets: [],
-        message: 'No overlays found on your account.',
-      });
+      return respond(200, { assets: [], message: 'No overlays found on your account.' });
     }
 
     // ── Step 3: Get full detail for each overlay & extract CDN URLs ─────────
-    console.log('[se-ripper] Step 3: Fetching overlay details...');
-
     const assets = [];
     const seenUrls = new Set();
+    const allDomainsFound = new Set(); // for diagnostics
 
     for (const overlay of overlaysList) {
       const overlayId = overlay._id || overlay.id;
-      if (!overlayId) {
-        console.warn('[se-ripper] Overlay missing ID, skipping:', overlay);
-        continue;
-      }
-
-      console.log('[se-ripper] Fetching overlay:', overlayId);
+      if (!overlayId) continue;
 
       let detailRes;
       try {
@@ -127,15 +112,11 @@ exports.handler = async (event) => {
           `https://api.streamelements.com/kappa/v2/overlays/${overlayId}`,
           { headers: seHeaders }
         );
-      } catch (err) {
-        console.warn('[se-ripper] Overlay detail fetch threw:', overlayId, err.message);
+      } catch {
         continue;
       }
 
-      if (!detailRes.ok) {
-        console.warn('[se-ripper] Overlay detail failed:', overlayId, detailRes.status);
-        continue;
-      }
+      if (!detailRes.ok) continue;
 
       const detail = await detailRes.json();
       const overlayName =
@@ -143,10 +124,13 @@ exports.handler = async (event) => {
           .replace(/[^a-zA-Z0-9 \-_]/g, '')
           .trim() || 'Overlay';
 
-      const urls = extractCdnUrls(detail);
-      console.log(`[se-ripper] Overlay "${overlayName}" CDN URLs found:`, urls.size);
+      // Collect all HTTP URLs for diagnostics, and SE-domain URLs for assets
+      const { matched, allDomains } = extractUrls(detail);
+      allDomains.forEach((d) => allDomainsFound.add(d));
 
-      for (const url of urls) {
+      console.log(`[se-ripper] Overlay "${overlayName}": ${matched.size} asset URLs found. All domains:`, [...allDomains]);
+
+      for (const url of matched) {
         if (!seenUrls.has(url)) {
           seenUrls.add(url);
           const rawName = url.split('/').pop().split('?')[0];
@@ -156,22 +140,20 @@ exports.handler = async (event) => {
     }
 
     console.log('[se-ripper] Total assets found:', assets.length);
+    console.log('[se-ripper] All domains seen across all overlays:', [...allDomainsFound]);
 
     if (assets.length === 0) {
       return respond(200, {
         assets: [],
-        message: 'No media files found in your overlays. They may use external links rather than uploaded files.',
+        message: `No media files found. Domains seen in your overlays: ${[...allDomainsFound].join(', ') || 'none'}`,
       });
     }
 
-    // Always return the asset URL list — the browser handles ZIP building
     return respond(200, { assets });
 
   } catch (err) {
     console.error('[se-ripper] Unhandled error:', err.message, err.stack);
-    return respond(500, {
-      error: `Unexpected error: ${err.message}`,
-    });
+    return respond(500, { error: `Unexpected error: ${err.message}` });
   }
 };
 
@@ -185,15 +167,24 @@ function respond(status, body) {
   };
 }
 
-function extractCdnUrls(obj, found = new Set()) {
+// Walk any object/array, collect all HTTP URLs and flag SE-domain ones
+function extractUrls(obj, matched = new Set(), allDomains = new Set()) {
   if (typeof obj === 'string') {
-    if (obj.startsWith('http') && obj.includes('cdn.streamelements.com')) {
-      found.add(obj);
+    if (obj.startsWith('http')) {
+      try {
+        const hostname = new URL(obj).hostname;
+        allDomains.add(hostname);
+        if (SE_DOMAINS.some((d) => obj.includes(d))) {
+          matched.add(obj);
+        }
+      } catch {
+        // not a valid URL, skip
+      }
     }
   } else if (Array.isArray(obj)) {
-    for (const item of obj) extractCdnUrls(item, found);
+    for (const item of obj) extractUrls(item, matched, allDomains);
   } else if (obj !== null && typeof obj === 'object') {
-    for (const val of Object.values(obj)) extractCdnUrls(val, found);
+    for (const val of Object.values(obj)) extractUrls(val, matched, allDomains);
   }
-  return found;
+  return { matched, allDomains };
 }
