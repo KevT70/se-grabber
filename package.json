@@ -1,8 +1,5 @@
 {
-  "name": "se-asset-grabber",
+  "name": "se-ripper",
   "version": "1.0.0",
-  "description": "StreamElements alert asset downloader",
-  "dependencies": {
-    "jszip": "^3.10.1"
-  }
+  "description": "StreamElements alert asset downloader"
 }

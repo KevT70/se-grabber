@@ -1,29 +1,27 @@
 /* ── Elements ─────────────────────────────────────────────────── */
-const tokenInput   = document.getElementById('token');
-const helpToggle   = document.getElementById('help-toggle');
-const tokenHelp    = document.getElementById('token-help');
-const modeToggle   = document.getElementById('mode-toggle');
-const labelSep     = document.getElementById('label-separate');
-const labelZip     = document.getElementById('label-zip');
-const modeHint     = document.getElementById('mode-hint');
-const grabBtn      = document.getElementById('grab-btn');
-const btnText      = grabBtn.querySelector('.btn-text');
-const btnSpinner   = grabBtn.querySelector('.btn-spinner');
-const statusEl     = document.getElementById('status');
-const resultsEl    = document.getElementById('results');
+const tokenInput  = document.getElementById('token');
+const helpToggle  = document.getElementById('help-toggle');
+const tokenHelp   = document.getElementById('token-help');
+const modeToggle  = document.getElementById('mode-toggle');
+const labelSep    = document.getElementById('label-separate');
+const labelZip    = document.getElementById('label-zip');
+const modeHint    = document.getElementById('mode-hint');
+const grabBtn     = document.getElementById('grab-btn');
+const btnText     = grabBtn.querySelector('.btn-text');
+const btnSpinner  = grabBtn.querySelector('.btn-spinner');
+const statusEl    = document.getElementById('status');
+const resultsEl   = document.getElementById('results');
 
 const MODE_HINTS = {
   separate: 'Your browser downloads each file one by one. Works every time, no fuss.',
-  zip:      'The server bundles everything into a single ZIP file. Faster, but may time out if you have a lot of large video files. Try "Download separately" if it fails.',
+  zip:      'All your files get bundled into a single ZIP in your browser. Nothing goes through a server — works on any size library.',
 };
 
 /* ── Token help toggle ────────────────────────────────────────── */
 helpToggle.addEventListener('click', () => {
   const isHidden = tokenHelp.hidden;
   tokenHelp.hidden = !isHidden;
-  helpToggle.textContent = isHidden
-    ? 'Hide instructions ↑'
-    : 'Where do I find this? ↓';
+  helpToggle.textContent = isHidden ? 'Hide instructions ↑' : 'Where do I find this? ↓';
 });
 
 /* ── Mode toggle ──────────────────────────────────────────────── */
@@ -49,34 +47,20 @@ async function handleGrab() {
     return;
   }
 
-  const mode = modeToggle.checked ? 'zip' : 'urls';
+  const isZip = modeToggle.checked;
 
   setLoading(true);
   showStatus('Connecting to StreamElements…', 'info');
   resultsEl.innerHTML = '';
 
   try {
+    // ── Always fetch the asset URL list from the function ──────
     const res = await fetch('/.netlify/functions/grab-assets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, mode }),
+      body: JSON.stringify({ token }),
     });
 
-    // ── ZIP mode ───────────────────────────────────────────────
-    if (mode === 'zip') {
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Something went wrong — try "Download separately" instead.');
-      }
-      showStatus('Building your ZIP…', 'info');
-      const blob = await res.blob();
-      triggerBlobDownload(blob, 'se-assets.zip');
-      showStatus(`Done! Your ZIP has been downloaded.`, 'success');
-      showZipReady(blob);
-      return;
-    }
-
-    // ── URL mode ───────────────────────────────────────────────
     const data = await res.json();
 
     if (!res.ok) {
@@ -84,13 +68,18 @@ async function handleGrab() {
     }
 
     if (!data.assets || data.assets.length === 0) {
-      showStatus(
-        data.message || 'No media assets found in your overlays.',
-        'info'
-      );
+      showStatus(data.message || 'No media assets found in your overlays.', 'info');
+      setLoading(false);
       return;
     }
 
+    // ── ZIP mode: build the ZIP in the browser ─────────────────
+    if (isZip) {
+      await buildAndDownloadZip(data.assets);
+      return;
+    }
+
+    // ── Separate mode: show download list ──────────────────────
     showStatus(
       `Found ${data.assets.length} file${data.assets.length !== 1 ? 's' : ''} — ready to download.`,
       'success'
@@ -104,10 +93,67 @@ async function handleGrab() {
   }
 }
 
+/* ── Client-side ZIP builder ──────────────────────────────────── */
+async function buildAndDownloadZip(assets) {
+  const zip = new JSZip();
+  let downloaded = 0;
+  let failed = 0;
+
+  showStatus(`Downloading files… 0 / ${assets.length}`, 'info');
+
+  for (let i = 0; i < assets.length; i++) {
+    const asset = assets[i];
+    try {
+      const res = await fetch(asset.url, { mode: 'cors' });
+      if (res.ok) {
+        const blob = await res.blob();
+        const safeFolderName = asset.overlayName.replace(/[^a-zA-Z0-9\-_]/g, '_');
+        zip.file(`${safeFolderName}/${asset.filename}`, blob);
+        downloaded++;
+      } else {
+        failed++;
+      }
+    } catch {
+      failed++;
+    }
+
+    showStatus(
+      `Downloading files… ${i + 1} / ${assets.length}`,
+      'info'
+    );
+  }
+
+  if (downloaded === 0) {
+    showStatus(
+      'Couldn\'t download any files directly — try "Download separately" instead.',
+      'error'
+    );
+    return;
+  }
+
+  showStatus('Building your ZIP…', 'info');
+
+  const zipBlob = await zip.generateAsync(
+    { type: 'blob' },
+    (metadata) => {
+      showStatus(`Building your ZIP… ${Math.round(metadata.percent)}%`, 'info');
+    }
+  );
+
+  triggerBlobDownload(zipBlob, 'se-assets.zip');
+
+  const msg = failed > 0
+    ? `Done! ZIP downloaded. ${failed} file${failed !== 1 ? 's' : ''} couldn't be fetched and were skipped.`
+    : `Done! All ${downloaded} file${downloaded !== 1 ? 's' : ''} bundled and downloaded.`;
+
+  showStatus(msg, 'success');
+  showZipReady(zipBlob);
+}
+
 /* ── UI helpers ───────────────────────────────────────────────── */
 function setLoading(on) {
-  grabBtn.disabled = on;
-  btnText.hidden   = on;
+  grabBtn.disabled  = on;
+  btnText.hidden    = on;
   btnSpinner.hidden = !on;
 }
 
@@ -134,7 +180,6 @@ function showZipReady(blob) {
 
 /* ── URL list ─────────────────────────────────────────────────── */
 function showUrlList(assets) {
-  // Group by overlay name
   const groups = {};
   for (const asset of assets) {
     const key = asset.overlayName || 'Other';
@@ -145,7 +190,6 @@ function showUrlList(assets) {
   const wrap = document.createElement('div');
   wrap.className = 'url-list';
 
-  // Header row
   const header = document.createElement('div');
   header.className = 'url-list-header';
   header.innerHTML = `
@@ -158,7 +202,6 @@ function showUrlList(assets) {
   header.appendChild(dlAllBtn);
   wrap.appendChild(header);
 
-  // Overlay groups
   for (const [name, items] of Object.entries(groups)) {
     const group = document.createElement('div');
     group.className = 'overlay-group';
@@ -197,14 +240,8 @@ function showUrlList(assets) {
 }
 
 /* ── Download helpers ─────────────────────────────────────────── */
-
-// Download a single asset — tries client-side fetch first (works if CDN
-// allows CORS), falls back to opening in a new tab (user right-clicks → Save As)
 async function downloadSingle(asset, btn) {
-  if (btn) {
-    btn.textContent = '…';
-    btn.disabled = true;
-  }
+  if (btn) { btn.textContent = '…'; btn.disabled = true; }
 
   const ok = await fetchAndDownload(asset.url, asset.filename);
 
@@ -213,7 +250,6 @@ async function downloadSingle(asset, btn) {
       btn.textContent = '✓';
       btn.classList.add('done');
     } else {
-      // Open in new tab as fallback
       window.open(asset.url, '_blank');
       btn.textContent = 'Opened ↗';
       btn.classList.add('done');
@@ -221,20 +257,16 @@ async function downloadSingle(asset, btn) {
   }
 }
 
-// Download all files sequentially with a short delay so the browser
-// doesn't block the multiple downloads
 async function downloadAll(assets, btn) {
   btn.disabled = true;
 
   for (let i = 0; i < assets.length; i++) {
     btn.textContent = `Downloading… ${i + 1} / ${assets.length}`;
 
-    // Find and mark the individual button for this file
     const row = resultsEl.querySelector(`li[data-url="${CSS.escape(assets[i].url)}"]`);
     const rowBtn = row ? row.querySelector('.file-dl-btn') : null;
 
     const ok = await fetchAndDownload(assets[i].url, assets[i].filename);
-
     if (!ok) window.open(assets[i].url, '_blank');
 
     if (rowBtn && !rowBtn.classList.contains('done')) {
@@ -243,21 +275,16 @@ async function downloadAll(assets, btn) {
       rowBtn.disabled = true;
     }
 
-    // Small pause between downloads so the browser stays happy
-    if (i < assets.length - 1) {
-      await sleep(700);
-    }
+    if (i < assets.length - 1) await sleep(700);
   }
 
-  btn.textContent = `✓ All Done`;
+  btn.textContent = '✓ All Done';
   setTimeout(() => {
     btn.textContent = `⬇ Download All (${assets.length})`;
     btn.disabled = false;
   }, 3000);
 }
 
-// Fetch a remote file and trigger a browser download via a Blob URL.
-// Returns true if successful, false if CORS blocked it.
 async function fetchAndDownload(url, filename) {
   try {
     const res = await fetch(url, { mode: 'cors' });
@@ -270,7 +297,6 @@ async function fetchAndDownload(url, filename) {
   }
 }
 
-// Create a temporary <a> pointing at a Blob URL and click it
 function triggerBlobDownload(blob, filename) {
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');

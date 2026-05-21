@@ -1,5 +1,3 @@
-const JSZip = require('jszip');
-
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -20,7 +18,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const { token, mode } = JSON.parse(event.body || '{}');
+    const { token } = JSON.parse(event.body || '{}');
 
     if (!token) {
       return respond(400, { error: 'No token provided.' });
@@ -31,7 +29,7 @@ exports.handler = async (event) => {
       Accept: 'application/json',
     };
 
-    // ── Step 1: Verify token & get channel ─────────────────────────────────
+    // ── Step 1: Verify token & get channel ID ──────────────────────────────
     console.log('[se-ripper] Step 1: Fetching channel info...');
 
     let channelRes;
@@ -166,39 +164,7 @@ exports.handler = async (event) => {
       });
     }
 
-    // ── Step 4a: ZIP mode ──────────────────────────────────────────────────
-    if (mode === 'zip') {
-      console.log('[se-ripper] ZIP mode: downloading files...');
-      const zip = new JSZip();
-
-      for (const asset of assets) {
-        try {
-          const fileRes = await fetch(asset.url);
-          if (fileRes.ok) {
-            const buffer = await fileRes.arrayBuffer();
-            const safeFolderName = asset.overlayName.replace(/[^a-zA-Z0-9\-_]/g, '_');
-            zip.file(`${safeFolderName}/${asset.filename}`, buffer);
-          }
-        } catch {
-          // Skip failed files
-        }
-      }
-
-      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
-
-      return {
-        statusCode: 200,
-        headers: {
-          ...CORS_HEADERS,
-          'Content-Type': 'application/zip',
-          'Content-Disposition': 'attachment; filename="se-assets.zip"',
-        },
-        body: zipBuffer.toString('base64'),
-        isBase64Encoded: true,
-      };
-    }
-
-    // ── Step 4b: URL mode ──────────────────────────────────────────────────
+    // Always return the asset URL list — the browser handles ZIP building
     return respond(200, { assets });
 
   } catch (err) {
