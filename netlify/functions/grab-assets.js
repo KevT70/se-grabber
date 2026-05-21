@@ -48,9 +48,9 @@ exports.handler = async (event) => {
     const channel = await channelRes.json();
     const channelId = channel._id;
 
-    // ── Step 2: Get list of overlays (no channel param — token scopes it) ──
+    // ── Step 2: Get list of overlays (channel ID in the path) ──────────────
     const overlaysRes = await fetch(
-      'https://api.streamelements.com/kappa/v2/overlays',
+      `https://api.streamelements.com/kappa/v2/overlays/${channelId}`,
       { headers: seHeaders }
     );
 
@@ -93,7 +93,6 @@ exports.handler = async (event) => {
       for (const url of urls) {
         if (!seenUrls.has(url)) {
           seenUrls.add(url);
-          // Grab just the filename from the URL path, strip query strings
           const rawName = url.split('/').pop().split('?')[0];
           const filename = rawName || 'asset';
           assets.push({ url, filename, overlayName });
