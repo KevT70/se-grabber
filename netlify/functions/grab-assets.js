@@ -7,7 +7,6 @@ const CORS_HEADERS = {
 };
 
 exports.handler = async (event) => {
-  // Handle CORS preflight
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: CORS_HEADERS, body: '' };
   }
@@ -32,38 +31,77 @@ exports.handler = async (event) => {
       Accept: 'application/json',
     };
 
-    // ── Step 1: Verify token & get channel ID ──────────────────────────────
-    const channelRes = await fetch(
-      'https://api.streamelements.com/kappa/v2/channels/me',
-      { headers: seHeaders }
-    );
+    // ── Step 1: Verify token & get channel ─────────────────────────────────
+    console.log('[se-ripper] Step 1: Fetching channel info...');
+
+    let channelRes;
+    try {
+      channelRes = await fetch(
+        'https://api.streamelements.com/kappa/v2/channels/me',
+        { headers: seHeaders }
+      );
+    } catch (err) {
+      console.error('[se-ripper] Step 1 fetch threw:', err.message);
+      return respond(500, { error: `Network error reaching StreamElements: ${err.message}` });
+    }
+
+    console.log('[se-ripper] Step 1 status:', channelRes.status);
 
     if (!channelRes.ok) {
+      const body = await channelRes.text().catch(() => '');
+      console.error('[se-ripper] Step 1 failed:', channelRes.status, body);
       return respond(401, {
-        error:
-          'Token not recognised — double-check it was copied in full and try again.',
+        error: 'Token not recognised — double-check it was copied in full and try again.',
       });
     }
 
     const channel = await channelRes.json();
-    const channelId = channel._id;
+    console.log('[se-ripper] Step 1 channel keys:', Object.keys(channel));
 
-    // ── Step 2: Get list of overlays (channel ID in the path) ──────────────
-    const overlaysRes = await fetch(
-      `https://api.streamelements.com/kappa/v2/overlays/${channelId}`,
-      { headers: seHeaders }
-    );
+    const channelId = channel._id;
+    console.log('[se-ripper] Channel ID:', channelId);
+
+    if (!channelId) {
+      return respond(500, {
+        error: `Got a channel response but couldn't find an ID. Keys returned: ${Object.keys(channel).join(', ')}`,
+      });
+    }
+
+    // ── Step 2: Get overlays list ──────────────────────────────────────────
+    console.log('[se-ripper] Step 2: Fetching overlays...');
+
+    let overlaysRes;
+    try {
+      overlaysRes = await fetch(
+        `https://api.streamelements.com/kappa/v2/overlays/${channelId}`,
+        { headers: seHeaders }
+      );
+    } catch (err) {
+      console.error('[se-ripper] Step 2 fetch threw:', err.message);
+      return respond(500, { error: `Network error fetching overlays: ${err.message}` });
+    }
+
+    console.log('[se-ripper] Step 2 status:', overlaysRes.status);
 
     if (!overlaysRes.ok) {
       const detail = await overlaysRes.text().catch(() => '');
+      console.error('[se-ripper] Step 2 failed:', overlaysRes.status, detail);
       return respond(500, {
         error: `Couldn't fetch overlays (${overlaysRes.status}). ${detail}`.trim(),
       });
     }
 
-    const overlaysList = await overlaysRes.json();
+    const overlaysRaw = await overlaysRes.json();
+    console.log('[se-ripper] Step 2 response type:', typeof overlaysRaw, Array.isArray(overlaysRaw) ? `array[${overlaysRaw.length}]` : Object.keys(overlaysRaw));
 
-    if (!overlaysList || overlaysList.length === 0) {
+    // SE might return { docs: [...] } or a plain array — handle both
+    const overlaysList = Array.isArray(overlaysRaw)
+      ? overlaysRaw
+      : overlaysRaw.docs || overlaysRaw.data || overlaysRaw.overlays || [];
+
+    console.log('[se-ripper] Overlays found:', overlaysList.length);
+
+    if (overlaysList.length === 0) {
       return respond(200, {
         assets: [],
         message: 'No overlays found on your account.',
@@ -71,45 +109,66 @@ exports.handler = async (event) => {
     }
 
     // ── Step 3: Get full detail for each overlay & extract CDN URLs ─────────
-    const assets = []; // { url, filename, overlayName }
+    console.log('[se-ripper] Step 3: Fetching overlay details...');
+
+    const assets = [];
     const seenUrls = new Set();
 
     for (const overlay of overlaysList) {
-      const detailRes = await fetch(
-        `https://api.streamelements.com/kappa/v2/overlays/${overlay._id}`,
-        { headers: seHeaders }
-      );
+      const overlayId = overlay._id || overlay.id;
+      if (!overlayId) {
+        console.warn('[se-ripper] Overlay missing ID, skipping:', overlay);
+        continue;
+      }
 
-      if (!detailRes.ok) continue;
+      console.log('[se-ripper] Fetching overlay:', overlayId);
+
+      let detailRes;
+      try {
+        detailRes = await fetch(
+          `https://api.streamelements.com/kappa/v2/overlays/${overlayId}`,
+          { headers: seHeaders }
+        );
+      } catch (err) {
+        console.warn('[se-ripper] Overlay detail fetch threw:', overlayId, err.message);
+        continue;
+      }
+
+      if (!detailRes.ok) {
+        console.warn('[se-ripper] Overlay detail failed:', overlayId, detailRes.status);
+        continue;
+      }
 
       const detail = await detailRes.json();
       const overlayName =
-        (detail.name || overlay.name || overlay._id)
+        (detail.name || overlay.name || overlayId)
           .replace(/[^a-zA-Z0-9 \-_]/g, '')
           .trim() || 'Overlay';
 
       const urls = extractCdnUrls(detail);
+      console.log(`[se-ripper] Overlay "${overlayName}" CDN URLs found:`, urls.size);
 
       for (const url of urls) {
         if (!seenUrls.has(url)) {
           seenUrls.add(url);
           const rawName = url.split('/').pop().split('?')[0];
-          const filename = rawName || 'asset';
-          assets.push({ url, filename, overlayName });
+          assets.push({ url, filename: rawName || 'asset', overlayName });
         }
       }
     }
 
+    console.log('[se-ripper] Total assets found:', assets.length);
+
     if (assets.length === 0) {
       return respond(200, {
         assets: [],
-        message:
-          'No media files found in your overlays. They may use external links rather than uploaded files.',
+        message: 'No media files found in your overlays. They may use external links rather than uploaded files.',
       });
     }
 
-    // ── Step 4a: ZIP mode — download everything server-side & bundle ────────
+    // ── Step 4a: ZIP mode ──────────────────────────────────────────────────
     if (mode === 'zip') {
+      console.log('[se-ripper] ZIP mode: downloading files...');
       const zip = new JSZip();
 
       for (const asset of assets) {
@@ -121,7 +180,7 @@ exports.handler = async (event) => {
             zip.file(`${safeFolderName}/${asset.filename}`, buffer);
           }
         } catch {
-          // Skip any file that fails to download
+          // Skip failed files
         }
       }
 
@@ -139,13 +198,13 @@ exports.handler = async (event) => {
       };
     }
 
-    // ── Step 4b: URL mode — return list of asset URLs for browser download ──
+    // ── Step 4b: URL mode ──────────────────────────────────────────────────
     return respond(200, { assets });
 
   } catch (err) {
-    console.error('grab-assets error:', err);
+    console.error('[se-ripper] Unhandled error:', err.message, err.stack);
     return respond(500, {
-      error: 'Something went wrong on our end. Try again in a moment.',
+      error: `Unexpected error: ${err.message}`,
     });
   }
 };
@@ -160,13 +219,9 @@ function respond(status, body) {
   };
 }
 
-// Recursively walk any object/array and collect all StreamElements CDN URLs
 function extractCdnUrls(obj, found = new Set()) {
   if (typeof obj === 'string') {
-    if (
-      obj.startsWith('http') &&
-      obj.includes('cdn.streamelements.com')
-    ) {
+    if (obj.startsWith('http') && obj.includes('cdn.streamelements.com')) {
       found.add(obj);
     }
   } else if (Array.isArray(obj)) {
