@@ -1,7 +1,13 @@
 /* ── Elements ─────────────────────────────────────────────────── */
-const tokenInput  = document.getElementById('token');
+const dropZone    = document.getElementById('drop-zone');
+const fileInput   = document.getElementById('file-input');
+const browseBtn   = document.getElementById('browse-btn');
+const dropContent = document.getElementById('drop-content');
+const fileSelected = document.getElementById('file-selected');
+const fileNameEl  = document.getElementById('file-name');
+const fileClear   = document.getElementById('file-clear');
 const helpToggle  = document.getElementById('help-toggle');
-const tokenHelp   = document.getElementById('token-help');
+const helpBox     = document.getElementById('help-box');
 const modeToggle  = document.getElementById('mode-toggle');
 const labelSep    = document.getElementById('label-separate');
 const labelZip    = document.getElementById('label-zip');
@@ -14,14 +20,93 @@ const resultsEl   = document.getElementById('results');
 
 const MODE_HINTS = {
   separate: 'Your browser downloads each file one by one. Works every time, no fuss.',
-  zip:      'All your files get bundled into a single ZIP in your browser. Nothing goes through a server — works on any size library.',
+  zip:      'All your files get bundled into a single ZIP right in your browser. Nothing goes through a server.',
 };
 
-/* ── Token help toggle ────────────────────────────────────────── */
+// Known StreamElements asset domains
+const SE_DOMAINS = [
+  'cdn.streamelements.com',
+  'static.streamelements.com',
+  'uploads.streamelements.com',
+  'streamelements.com',
+];
+
+let loadedFile = null; // holds the parsed JSON once uploaded
+
+/* ── File drop / browse ───────────────────────────────────────── */
+browseBtn.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('click', (e) => {
+  if (e.target === dropZone || e.target === dropContent) fileInput.click();
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) handleFile(fileInput.files[0]);
+});
+
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+
+dropZone.addEventListener('dragleave', () => {
+  dropZone.classList.remove('drag-over');
+});
+
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+});
+
+fileClear.addEventListener('click', (e) => {
+  e.stopPropagation();
+  clearFile();
+});
+
+function handleFile(file) {
+  if (!file.name.endsWith('.json')) {
+    showStatus('Please upload a .json file exported from StreamElements.', 'error');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      loadedFile = JSON.parse(e.target.result);
+      showFileSelected(file.name);
+      hideStatus();
+      resultsEl.innerHTML = '';
+    } catch {
+      showStatus('That file doesn\'t look like valid JSON. Try exporting again from StreamElements.', 'error');
+      clearFile();
+    }
+  };
+  reader.readAsText(file);
+}
+
+function showFileSelected(name) {
+  fileNameEl.textContent = name;
+  dropContent.hidden = true;
+  fileSelected.hidden = false;
+  dropZone.classList.add('has-file');
+}
+
+function clearFile() {
+  loadedFile = null;
+  fileInput.value = '';
+  dropContent.hidden = false;
+  fileSelected.hidden = true;
+  dropZone.classList.remove('has-file');
+  hideStatus();
+  resultsEl.innerHTML = '';
+}
+
+/* ── Help toggle ──────────────────────────────────────────────── */
 helpToggle.addEventListener('click', () => {
-  const isHidden = tokenHelp.hidden;
-  tokenHelp.hidden = !isHidden;
-  helpToggle.textContent = isHidden ? 'Hide instructions ↑' : 'Where do I find this? ↓';
+  const isHidden = helpBox.hidden;
+  helpBox.hidden = !isHidden;
+  helpToggle.textContent = isHidden ? 'Hide instructions ↑' : 'How do I export my overlay? ↓';
 });
 
 /* ── Mode toggle ──────────────────────────────────────────────── */
@@ -39,58 +124,84 @@ function updateModeUI() {
 grabBtn.addEventListener('click', handleGrab);
 
 async function handleGrab() {
-  const token = tokenInput.value.trim();
-
-  if (!token) {
-    showStatus('Paste your StreamElements token in the box above first.', 'error');
-    tokenInput.focus();
+  if (!loadedFile) {
+    showStatus('Upload your overlay JSON file first (Step 1).', 'error');
     return;
   }
 
   const isZip = modeToggle.checked;
 
   setLoading(true);
-  showStatus('Connecting to StreamElements…', 'info');
+  showStatus('Reading your overlay file…', 'info');
   resultsEl.innerHTML = '';
 
   try {
-    // ── Always fetch the asset URL list from the function ──────
-    const res = await fetch('/.netlify/functions/grab-assets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
-    });
+    // Extract all SE CDN URLs from the JSON
+    const { matched, allDomains } = extractUrls(loadedFile);
+    const assets = buildAssetList(matched, loadedFile);
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || 'Something went wrong. Try again.');
-    }
-
-    if (!data.assets || data.assets.length === 0) {
-      showStatus(data.message || 'No media assets found in your overlays.', 'info');
+    if (assets.length === 0) {
+      const domains = [...allDomains].filter(d => !d.includes('google') && !d.includes('jquery'));
+      showStatus(
+        domains.length > 0
+          ? `No media files found. Other domains spotted: ${domains.join(', ')}`
+          : 'No media files found in this overlay export.',
+        'info'
+      );
       setLoading(false);
       return;
     }
 
-    // ── ZIP mode: build the ZIP in the browser ─────────────────
     if (isZip) {
-      await buildAndDownloadZip(data.assets);
-      return;
+      await buildAndDownloadZip(assets);
+    } else {
+      showStatus(
+        `Found ${assets.length} file${assets.length !== 1 ? 's' : ''} — ready to download.`,
+        'success'
+      );
+      showUrlList(assets);
     }
 
-    // ── Separate mode: show download list ──────────────────────
-    showStatus(
-      `Found ${data.assets.length} file${data.assets.length !== 1 ? 's' : ''} — ready to download.`,
-      'success'
-    );
-    showUrlList(data.assets);
-
   } catch (err) {
-    showStatus(err.message || 'Something went wrong. Try again.', 'error');
+    showStatus(`Something went wrong: ${err.message}`, 'error');
   } finally {
     setLoading(false);
   }
+}
+
+/* ── URL extraction (runs entirely in browser) ────────────────── */
+function extractUrls(obj, matched = new Set(), allDomains = new Set()) {
+  if (typeof obj === 'string') {
+    if (obj.startsWith('http')) {
+      try {
+        const hostname = new URL(obj).hostname;
+        allDomains.add(hostname);
+        if (SE_DOMAINS.some((d) => obj.includes(d))) {
+          matched.add(obj);
+        }
+      } catch {
+        // not a valid URL
+      }
+    }
+  } else if (Array.isArray(obj)) {
+    for (const item of obj) extractUrls(item, matched, allDomains);
+  } else if (obj !== null && typeof obj === 'object') {
+    for (const val of Object.values(obj)) extractUrls(val, matched, allDomains);
+  }
+  return { matched, allDomains };
+}
+
+// Turn a Set of URLs into a tidy asset list with filenames and overlay name
+function buildAssetList(urlSet, json) {
+  const overlayName = (json.name || json.overlay_name || 'Overlay')
+    .replace(/[^a-zA-Z0-9 \-_]/g, '')
+    .trim() || 'Overlay';
+
+  return [...urlSet].map((url) => ({
+    url,
+    filename: url.split('/').pop().split('?')[0] || 'asset',
+    overlayName,
+  }));
 }
 
 /* ── Client-side ZIP builder ──────────────────────────────────── */
@@ -99,16 +210,15 @@ async function buildAndDownloadZip(assets) {
   let downloaded = 0;
   let failed = 0;
 
-  showStatus(`Downloading files… 0 / ${assets.length}`, 'info');
-
   for (let i = 0; i < assets.length; i++) {
+    showStatus(`Downloading files… ${i + 1} / ${assets.length}`, 'info');
     const asset = assets[i];
     try {
       const res = await fetch(asset.url, { mode: 'cors' });
       if (res.ok) {
         const blob = await res.blob();
-        const safeFolderName = asset.overlayName.replace(/[^a-zA-Z0-9\-_]/g, '_');
-        zip.file(`${safeFolderName}/${asset.filename}`, blob);
+        const safeName = asset.overlayName.replace(/[^a-zA-Z0-9\-_]/g, '_');
+        zip.file(`${safeName}/${asset.filename}`, blob);
         downloaded++;
       } else {
         failed++;
@@ -116,11 +226,6 @@ async function buildAndDownloadZip(assets) {
     } catch {
       failed++;
     }
-
-    showStatus(
-      `Downloading files… ${i + 1} / ${assets.length}`,
-      'info'
-    );
   }
 
   if (downloaded === 0) {
@@ -135,9 +240,7 @@ async function buildAndDownloadZip(assets) {
 
   const zipBlob = await zip.generateAsync(
     { type: 'blob' },
-    (metadata) => {
-      showStatus(`Building your ZIP… ${Math.round(metadata.percent)}%`, 'info');
-    }
+    (meta) => showStatus(`Building your ZIP… ${Math.round(meta.percent)}%`, 'info')
   );
 
   triggerBlobDownload(zipBlob, 'se-assets.zip');
@@ -161,6 +264,10 @@ function showStatus(msg, type = 'info') {
   statusEl.textContent = msg;
   statusEl.className   = `status ${type}`;
   statusEl.hidden      = false;
+}
+
+function hideStatus() {
+  statusEl.hidden = true;
 }
 
 /* ── ZIP ready block ──────────────────────────────────────────── */
@@ -192,9 +299,8 @@ function showUrlList(assets) {
 
   const header = document.createElement('div');
   header.className = 'url-list-header';
-  header.innerHTML = `
-    <p>${assets.length} file${assets.length !== 1 ? 's' : ''} found across ${Object.keys(groups).length} overlay${Object.keys(groups).length !== 1 ? 's' : ''}</p>
-  `;
+  header.innerHTML = `<p>${assets.length} file${assets.length !== 1 ? 's' : ''} found</p>`;
+
   const dlAllBtn = document.createElement('button');
   dlAllBtn.className = 'dl-all-btn';
   dlAllBtn.textContent = `⬇ Download All (${assets.length})`;
@@ -212,7 +318,6 @@ function showUrlList(assets) {
     group.appendChild(groupHeader);
 
     const ul = document.createElement('ul');
-
     for (const item of items) {
       const li = document.createElement('li');
       li.dataset.url = item.url;
@@ -242,42 +347,29 @@ function showUrlList(assets) {
 /* ── Download helpers ─────────────────────────────────────────── */
 async function downloadSingle(asset, btn) {
   if (btn) { btn.textContent = '…'; btn.disabled = true; }
-
   const ok = await fetchAndDownload(asset.url, asset.filename);
-
   if (btn) {
-    if (ok) {
-      btn.textContent = '✓';
-      btn.classList.add('done');
-    } else {
-      window.open(asset.url, '_blank');
-      btn.textContent = 'Opened ↗';
-      btn.classList.add('done');
-    }
+    btn.textContent = ok ? '✓' : 'Opened ↗';
+    btn.classList.add('done');
+    if (!ok) window.open(asset.url, '_blank');
   }
 }
 
 async function downloadAll(assets, btn) {
   btn.disabled = true;
-
   for (let i = 0; i < assets.length; i++) {
     btn.textContent = `Downloading… ${i + 1} / ${assets.length}`;
-
     const row = resultsEl.querySelector(`li[data-url="${CSS.escape(assets[i].url)}"]`);
     const rowBtn = row ? row.querySelector('.file-dl-btn') : null;
-
     const ok = await fetchAndDownload(assets[i].url, assets[i].filename);
     if (!ok) window.open(assets[i].url, '_blank');
-
     if (rowBtn && !rowBtn.classList.contains('done')) {
       rowBtn.textContent = ok ? '✓' : 'Opened ↗';
       rowBtn.classList.add('done');
       rowBtn.disabled = true;
     }
-
     if (i < assets.length - 1) await sleep(700);
   }
-
   btn.textContent = '✓ All Done';
   setTimeout(() => {
     btn.textContent = `⬇ Download All (${assets.length})`;
@@ -288,7 +380,7 @@ async function downloadAll(assets, btn) {
 async function fetchAndDownload(url, filename) {
   try {
     const res = await fetch(url, { mode: 'cors' });
-    if (!res.ok) throw new Error('fetch failed');
+    if (!res.ok) throw new Error();
     const blob = await res.blob();
     triggerBlobDownload(blob, filename);
     return true;

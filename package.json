@@ -1,5 +1,5 @@
 {
   "name": "se-ripper",
-  "version": "1.0.0",
-  "description": "StreamElements alert asset downloader"
+  "version": "2.0.0",
+  "description": "StreamElements alert asset downloader — runs entirely in the browser"
 }

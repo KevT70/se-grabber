@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SE Asset Grabber</title>
+  <title>SE Ripper</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
@@ -18,40 +18,48 @@
     <header>
       <div class="logo">
         <span class="logo-icon">⬡</span>
-        <span class="logo-text">SE Asset Grabber</span>
+        <span class="logo-text">SE Ripper</span>
       </div>
       <p class="tagline">Pull your StreamElements alert sounds & videos in seconds.</p>
     </header>
 
     <div class="card">
 
-      <!-- ── Step 1: Token ───────────────────────────────── -->
+      <!-- ── Step 1: Upload JSON ─────────────────────────────── -->
       <div class="step">
-        <label class="step-label" for="token">
-          <span class="step-num">01</span> Your StreamElements Token
+        <label class="step-label">
+          <span class="step-num">01</span> Upload Your Overlay Export
         </label>
-        <input
-          id="token"
-          type="password"
-          class="token-input"
-          placeholder="Paste your JWT token here"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button class="token-help-toggle" id="help-toggle" type="button">
-          Where do I find this? ↓
+
+        <div class="drop-zone" id="drop-zone">
+          <input type="file" id="file-input" accept=".json" hidden />
+          <div class="drop-content" id="drop-content">
+            <span class="drop-icon">📂</span>
+            <p>Drop your overlay JSON here<br />or <button type="button" id="browse-btn">browse for it</button></p>
+          </div>
+          <div class="file-selected" id="file-selected" hidden>
+            <span class="file-tick">✓</span>
+            <span id="file-name"></span>
+            <button type="button" id="file-clear" title="Remove file">×</button>
+          </div>
+        </div>
+
+        <button class="help-toggle" id="help-toggle" type="button">
+          How do I export my overlay? ↓
         </button>
-        <div class="token-help" id="token-help" hidden>
+        <div class="help-box" id="help-box" hidden>
           <ol>
             <li>Go to <strong>streamelements.com</strong> and log in</li>
-            <li>Click your profile picture (top right)</li>
-            <li>Go to <strong>Account Settings → Channels</strong></li>
-            <li>Find the <strong>JWT Token</strong> field and copy it</li>
+            <li>Click <strong>Overlays</strong> in the left-hand menu</li>
+            <li>Click on the overlay you want to rip (e.g. <strong>Alerts</strong>)</li>
+            <li>In the editor, click the <strong>⚙ gear icon</strong> or <strong>...</strong> menu (top right of the editor)</li>
+            <li>Choose <strong>Export</strong> and save the <strong>.json</strong> file to your desktop</li>
+            <li>Upload that file above</li>
           </ol>
         </div>
       </div>
 
-      <!-- ── Step 2: Mode toggle ────────────────────────── -->
+      <!-- ── Step 2: Mode toggle ────────────────────────────── -->
       <div class="step">
         <span class="step-label">
           <span class="step-num">02</span> Download Method
@@ -73,7 +81,7 @@
         </p>
       </div>
 
-      <!-- ── Step 3: Go button ──────────────────────────── -->
+      <!-- ── Step 3: Go button ──────────────────────────────── -->
       <div class="step">
         <span class="step-label">
           <span class="step-num">03</span> Grab Everything
@@ -86,18 +94,18 @@
         </button>
       </div>
 
-      <!-- ── Status message ─────────────────────────────── -->
+      <!-- ── Status ─────────────────────────────────────────── -->
       <div class="status" id="status" hidden></div>
 
     </div>
 
-    <!-- ── Results ─────────────────────────────────────── -->
+    <!-- ── Results ─────────────────────────────────────────── -->
     <div class="results" id="results"></div>
 
   </main>
 
   <footer>
-    <p>Grabs media files from your StreamElements overlays. Your token is never stored.</p>
+    <p>Everything runs in your browser. Your files are never uploaded anywhere.</p>
   </footer>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
